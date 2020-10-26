@@ -1,0 +1,579 @@
+---
+date: "25/10/2020"
+output:
+    html_document:
+      toc: true
+      toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Project 1 results
+
+Hello! This is Project 1 results written and saved in .Rmd file.
+
+## 0. Installing and loading libraries
+
+```{r required packages installation, message=FALSE, results='hide'}
+pckgs <- c('data.table', 'ggplot2', 'reshape2', 'tidyverse', 'corrplot', 'Hmisc')
+for(i in pckgs){
+  if(!require(i, character.only = T)){
+    install.packages(i, dependencies = T)
+    library(i)
+  }
+}
+```
+
+```{r loading libraries if already intalled, message=FALSE, results='hide'}
+library(data.table)  # this library need to unite all .csv files 
+library(tidyverse)  # to easily manipulate with data
+library(reshape2)  # to reshape data for long format for beautiful plots
+library(ggplot2)  # to do plots
+library(corrplot)  # to plot corr.plots
+library(Hmisc) # to calculate correlation, both r and p
+```
+
+## 1. Assembling the whole dataset using function
+
+Let's write a function to unite files:
+
+```{r unite_csv, echo=T}
+multmerge = function(path){
+  filenames=list.files(path=path, full.names=TRUE)
+  rbindlist(lapply(filenames, fread))
+}
+```
+
+This variable allow us to specify path to our files:
+
+```{r path variable, echo=T}
+path <- "/home/ignat/Downloads/Data"
+```
+
+Don't forget to change it!
+
+Using function:
+
+```{r function call,echo=TRUE}
+full <- multmerge(path)
+```
+
+Force encoding and converting to df to UTF-8 to be COMPLETELY sure:
+```{r resaving in UTF-8 format}
+df_all <- as.data.frame((full),encoding = "UTF-8")
+```
+
+Everything works just as planned.
+
+## 2. EDA
+
+### 2.1 Correcting data
+
+Let's rename column "Sex" for convenience 
+(because previous column name is too long):
+
+```{r renaming column}
+colnames(df_all)[2] <- "Sex"
+```
+
+It's a good habit to look out your data manually. When using RStudio, you can
+use ```typeof()```  or ```str()``` of each column to find out data types. 
+
+More advanced way:
+
+```{r first look}
+sapply(df_all,class)
+```
+
+What do we find? **Rings**, **Sex** and **Length** are character(i.e. strings), 
+but Rings and Sex should be factor. It seems that there are variables that 
+contain badly measured data. 
+Also  we found some bad data in **Viscera_weight**.
+It is basically not an aberration but a scientific notation of a regular number.
+It won't be considered as aberration after conversion to numeric type. 
+For example, there are 6 levels in Sex variable instead of 3. 
+
+But before filtering we should check for NAs/Infs. 
+
+There are two main approaches to handling NAs:
+1. One can simply get rid of obseravtions that contain them. This approach can 
+be inefficient when there are too many NAs in the data, so  be careful with it!
+2. We can also substitute NAs with some other value 
+(mean/0/some predicted value/etc).As a result, new values can affect our mean, 
+SD and other statistics. 
+This approach can change the results of statistical 
+tests and other manipulations with data more than filtering such observations 
+out.
+
+Let's find out all NA and get the job done. We can easily do that by using
+
+```{r NA checking}
+apply(df_all, 2, function(df_all) any(is.na(df_all)))
+```
+
+If NAs/Inf exists, we should remove rows containing NAs and replace Inf 
+with 0s. To do this, execute:
+
+```{r removing NAs and Infs}
+df_all[which(df_all == -Inf)] <- NA
+df_no_NAs <- na.omit(df_all)
+df_no_NAs <- as.data.frame(df_no_NAs)
+```
+
+Comparing length of filtered dataset and unfiltered dataset, we find that our
+set contained only 21 NAs. It is relatively small number. In our case we can 
+just remove it without losing any info (so did I). So, 4156 observations remain.
+
+But you should remember -- after deleting rows remaining rows keep original
+row names. To update row names for proper indexing, use:
+
+```{r upadating rownumbers}
+rownames(df_no_NAs) <- NULL
+```
+
+Now we can use View() to have a look at data. Using arrows near column name
+when viewing the data we can easily find wrong values (if they exist) 
+in each column. 
+For example:
+
+```{r closer look at aberrations using slicing}
+df_no_NAs[1391,2]
+```
+
+will show us "male" instead of "1". But it's a very primitive way.
+
+More advanced way includes :
+
+```{r changing data types}
+df_no_NAs[] <- lapply(df_no_NAs, factor)
+df_no_NAs <- type.convert(df_no_NAs)
+```
+
+We can notice that after type conversion Rings and Length column are
+still factors. Something gone wrong.
+
+For more readability, let's change 1-2-3s in Sex column to
+male/female/juvenile values. Also our plan is to delete badly measured data and
+drop unused levels.
+
+Because of type, we need to perform additional steps:
+```{r adding new levels for replacing:}
+levels(df_no_NAs$Sex)
+levels(df_no_NAs$Sex) <- c(levels(df_no_NAs$Sex), "female", "juvenile","male")
+```
+
+After adding new levels, we can change our data...
+
+```{r replacing}
+df_no_NAs$Sex[df_no_NAs$Sex == 1] <- "male"
+df_no_NAs$Sex[df_no_NAs$Sex == 'one'] <- "male"
+df_no_NAs$Sex[df_no_NAs$Sex == 3] <- 'juvenile'
+df_no_NAs$Sex[df_no_NAs$Sex == 'three'] <- 'juvenile'
+df_no_NAs$Sex[df_no_NAs$Sex == 2] <- 'female'
+levels(df_no_NAs$Sex)
+```
+
+and drop unused levels.
+
+```{r drop Sex levels}
+df_no_NAs$Sex <- droplevels((df_no_NAs$Sex))
+```
+
+Same tactics for other factor variables.
+
+Rings:
+
+```{r same for Rings}
+levels(df_no_NAs$Rings)[135]
+df_no_NAs$Rings[df_no_NAs$Rings == 'nine'] <- 9
+df_no_NAs$Rings <- droplevels((df_no_NAs$Rings))
+```
+
+For Length:
+
+```{r same for Length}
+levels(df_no_NAs$Length)
+levels(df_no_NAs$Length) <- c(levels(df_no_NAs$Length), "0")
+df_no_NAs$Length[df_no_NAs$Length == "No data! I forgot to mesure it!("] <- "0"
+df_no_NAs$Length <- droplevels((df_no_NAs$Length))
+```
+
+For Rings and Length it is needed to convert to numeric type:
+
+```{r conversion to numeric, include=FALSE,echo=TRUE}
+df_no_NAs$Rings <- as.numeric(levels(df_no_NAs$Rings))[df_no_NAs$Rings]
+df_no_NAs$Length <- as.numeric(levels(df_no_NAs$Length))[df_no_NAs$Length]
+```
+
+### 2.2. Finding correlations between variables
+
+Let's look if any correlation btw variables exists. But before we should know 
+about distribution to apply correct correlation test.
+
+Additional variable will be needed:
+
+```{r adding variable to filter columns}
+drops <- c("Sex") 
+```
+
+Because we have column with different data type, it should be skipped during 
+iteration. We will use it very soon.
+
+First of all, we should check for normal distribution. If it has normal
+dist-n, we should use Pearson correlation and T-test. If not, we should use 
+Spearman correlation and U-test.
+
+Let's plot density plots using ggplot2. For example, Diameter. Results will be
+used later.
+
+```{r density plot, echo = FALSE}
+p <- ggplot(data=df_no_NAs, aes(x=Diameter, group=Sex, fill=Sex)) +
+  geom_density(alpha=0.4)
+p <- p + xlab("Diameter") + ylab("Density") + 
+  ggtitle("Density plot for diameter")
+p
+```
+
+Let's plot multiple density plots :
+
+```{r multiple density plot, warning=FALSE,message=FALSE}
+ggplot(data = reshape2::melt(df_no_NAs), aes(x = value)) + 
+  geom_density() + 
+  facet_wrap(~variable, scales = 'free') + theme_bw() + xlab('') + ylab('') + ggtitle('Distributions visualization')
+```
+
+We see, that Diameter isn't normally distributed. Let's confirm it using
+Shapiro-Wilk test.
+
+```{r Shapiro test diameter}
+shapiro.test(df_no_NAs$Diameter)$p
+```
+
+Let's check other variables:
+
+```{r Shapiro test all variables}
+df_norm_test <- df_no_NAs[,!(names(df_no_NAs) %in% drops)]
+df_test_res <- lapply(df_norm_test, shapiro.test)
+df_test_res
+```
+
+We found that none of our variables are normally distributed.
+
+Let's do correlation tests. I wrote a function which allows us to build 
+correlation plot for all variables.
+
+```{r corr plot for all variables}
+df_corr <- split(df_no_NAs[,!(names(df_no_NAs) %in% drops)], df_no_NAs$Sex)
+##extract names
+nam<-names(df_corr)
+# Plot three pictures
+par(mfrow=c(1,3))
+col<- colorRampPalette(c("red","white","blue"))(20)
+for (i in seq_along(df_corr)){
+  # Calculate the correlation in all data.frames using lapply 
+  corr_matrix<-rcorr(as.matrix(df_corr[[i]]),type = "spearman")
+  corrplot(corr_matrix$r, type="upper",tl.col="black", tl.cex=0.5,tl.srt=45, 
+           col=col,
+           addCoef.col = "black", p.mat = corr_matrix$p, 
+           insig = "blank",sig.level = 0.05)
+  mtext(paste(nam[i]),line=1,side=3)
+}
+```
+
+We found a really huge correlation between all variables in all groups.
+
+What should we do? Linear models wouldn't be so usable. 
+My plan is to do PCA, but later.
+
+
+### 2.3: detecting and treating outliers
+
+There are two ways to see outliers.
+
+Simple way:
+
+```{r simple boxplots}
+boxplot(df_no_NAs)
+```
+
+God-tier:
+
+```{r boxplots, but beatiful,message=FALSE}
+p1 <- ggplot(data = reshape2::melt(df_no_NAs), aes(x=variable, y=value)) 
+p1 <- p1 + geom_boxplot(aes(fill=Sex))
+p1 <- p1 + facet_wrap( ~ variable, scales="free")
+p1 <- p1 + xlab("variables") + ylab("values") + 
+  ggtitle("Outliers detection using boxplots")
+p1 <- p1 + guides(fill=guide_legend(title="Sex"))
+p1
+```
+
+Yep, we have outliers across all variables.
+One of the most interesting variables here is **Rings**. It looks like that it 
+contains the largest number of outliers. Let's check how many:
+
+```{r outliers of Rings}
+length(boxplot.stats(df_no_NAs$Rings)$out)
+```
+
+Oops, almost 300 outliers. It's too many to just filter out. Also because of
+big number, we cannot substitute it with mean/median/0/etc. It will cause 
+devastating effect on data because variable is **discrete**. 
+This kind of substitution will make this variable continuous. 
+That we be a *huge* mistake.
+Substitution to zeros will make a very negative impact on 
+statistical tests and distribution of this variable.
+
+So my decision was to leave this variable as is but manage outliers in 
+other variables.
+So,how to treat outliers? Let's treat it with 1.5*IQR (inter-quartile range). 
+It's easy to do, and also makes a good job when dealing with extreme 
+observations while preserving a lot of data.
+
+I prefer to use functions as much as possible, because after being written, 
+you can aplly it many times.
+
+```{r outliers treating using function}
+outliers_treat <- function(x) {
+  qnt <- quantile(x, probs = c(.25, .75), na.rm = TRUE)
+  H <- 1.5*IQR(x, na.rm = TRUE)
+  x[x< (qnt[1] - H)] <- qnt[1]-H
+  x[x> (qnt[2] + H)] <- qnt[2]+H
+  x
+}
+```
+
+It should be also noted, that **Sex** can't be an outlier because 
+it's factor variable.
+
+Applying function to our data:
+
+```{r function calling to treat data}
+df_treated <- df_no_NAs %>% group_by(Sex) %>%
+  mutate_at(vars(-Rings,-Sex), outliers_treat)
+```
+
+NIIIIIIIIICE, it works.
+
+Let's check results. Plotting boxplots for treated data:
+
+```{r plotting again,message=FALSE}
+p2 <- ggplot(data = reshape2::melt(df_treated), aes(x=variable, y=value))
+p2 <- p2 + geom_boxplot(aes(fill=Sex))
+p2 <- p2 + facet_wrap( ~ variable, scales="free")
+p2 <- p2 + xlab("variables") + ylab("values") + 
+  ggtitle("Boxplots after outliers treatment")
+p2 <- p2 + guides(fill=guide_legend(title="Sex"))
+p2
+```
+
+All hail the ggplot2!
+
+For the sake of curiosity, let's have a look at distribution of treated data.
+
+```{r distributions without outliers, message=FALSE}
+ggplot(data = reshape2::melt(df_treated), aes(x = value)) + geom_density() +   facet_wrap(~variable, scales = 'free') + theme_bw() + xlab('') + ylab('') + ggtitle('Distributions visualization after outliers treatment')
+```
+
+Outliers have been treated successfully. Outliers filtration certainly 
+affected distributions of variables, especially Height. 
+Now it even resembles normal distribution.
+
+## 3: Mean and SD for Length by Sex
+
+It's easy(although in dplyr 0.8.0+ funs() is deprecated). Let's calculate it:
+
+```{r  easy dplyr function,warning=FALSE,message=FALSE}
+df_treated %>% 
+  group_by(Sex) %>% 
+  summarise(Mean = mean(Length), SD = sd(Length))
+```
+
+
+
+## 4: Find percent of clams, which Height <= 0.165
+
+```{r task 4}
+noquote(paste0(as.character(length(which(df_treated$Height <= 0.165))/nrow(df_treated) * 100), '%')) 
+```
+
+## 5: Find Length, which is bigger than 92% of all observations
+
+We just need to know 92% quantile.
+
+```{r task 5}
+quantile(df_treated$Length, probs =  0.92)
+```
+
+
+## 6: Calculate z-scores for Length and store it in new column
+
+To store new acquired data, let's create new column.
+
+```{r task 6}
+df_treated$Length_z_scores <- scale(df_treated$Length)
+```
+
+## 7: Compare clams Diameter with Rings = 5 and = 15
+
+In order to complete our task, we should use U-test
+(because our distribution isn't normal and we have 2 independent groups).
+
+Let's build more plots. To do this, we need to subset our data:
+
+```{r task 7 subset,warning=FALSE,message=FALSE}
+rings_5_15 <- df_treated %>% 
+  filter(Rings == 15 | Rings == 5) %>% 
+  mutate(Rings = as.factor(Rings)) %>% 
+  select(Rings, Diameter) %>% 
+  group_by(Rings,Sex)
+```
+
+Variable **Rings** in this subset was converted to factor for proper comparison.
+
+Confirming non-normal distribution for Diameter:
+
+```{r shapiro task 7}
+shapiro.test(rings_5_15$Diameter)
+```
+
+Visualizing:
+
+```{r diameter qqplot}
+qqnorm(rings_5_15$Diameter)
+qqline(rings_5_15$Diameter, col = "red", lwd = 2)
+```
+
+Both statistical tests and visualization tell us that distribution is non-normal.
+
+Let's do U-test.
+
+H0: clams with 5 and 15 rings have the same median.
+H1: clams with 5 and 15 rings have different medians.
+
+```{r task 7 U-test }
+w <- wilcox.test(data=rings_5_15, Diameter~Rings, paired = F)
+```
+
+**Conclusion:** H0 is rejected, H1 is accepted: diameter of clams with 5 rings
+is different from diameter of clams with 15 rings.
+
+It should be noted, that we don't know which is larger because two-tailed test
+was used.
+
+To understand which group has smaller diameter we need to build plots.
+
+Visualizing results:
+
+```{r boxplot for task 7}
+ggplot(rings_5_15, aes(Rings, Diameter, fill = Rings)) + geom_boxplot() + 
+  ggtitle("Diameter of clams with 5 and 15 rings") 
+```
+
+**Conclusion**: diameter of clams with 5 rings is significantly less than 
+diameter of clams with 15 rings.
+
+## 8: Diameter & Whole weight investigation 
+
+Correlations are already built for all variables grouping by Sex. 
+Plot can be used for any article and clearly depicts correlation.
+Let's check it in more simple way. Just compute correlation score:
+
+```{r corr test for Diameter and Whole_weight}
+cor_diam_weight <- cor(df_treated$Diameter, df_treated$Whole_weight,method = 'spearman')
+```
+
+Let's build more specialized plot:
+
+```{r correlation plot, warning=FALSE, message=FALSE}
+ggplot(data = df_treated, aes(Diameter, Whole_weight)) + geom_point() + geom_smooth(method=lm) + theme_bw() + ylab("Whole weight") + ylim(0, 3) + ggtitle("Correlation of diameter and whole weight of clams")
+```
+
+## 9: Additional task:
+
+Previously we extensively worked with two variables: Length and Whole_weight.
+Let's continue our work towards initial task.
+
+### 9.1: Length(z-scored)--any difference between male/female/juvenile?
+
+Previously we standardized Length(Length_z_scores). Let's check out if any 
+difference in Length between different Sex exists (after z-scoring).
+
+NB! After z-scoring variable are **not** normally distributed. Prove:
+
+```{r}
+p <- ggplot(data=df_treated, aes(x=Length_z_scores, group=Sex, fill=Sex)) +
+  geom_density(alpha=0.4)
+p <- p + xlab("Length (z-scored") + ylab("Density") + 
+  ggtitle("Density plot for z-scored Length")
+p
+```
+
+Let's collect basic statistics:
+
+```{r calc basic stats,warning=FALSE,message=FALSE}
+group_by(df_treated, Sex) %>%
+  summarise(
+    count = n(),
+    mean = mean(Length_z_scores, na.rm = TRUE),
+    sd = sd(Length_z_scores, na.rm = TRUE))
+```
+
+Do not be surprised that after scaling mean for juvenile organisms less than 0.
+It means that Length of juvenile clams was less than mean of other clams before
+standardization.
+
+Because we have 3 groups(male,female,juvenile) we should use Kruskal-Wallis test
+(as a non-parametric analogue of ANOVA) with subsequent pairwise comparisons 
+and also use Benjamini-Hochberg correction.
+
+```{r kruskal test}
+kruskal.test(Length_z_scores ~ Sex, data = df_treated)
+```
+
+```{r pairwise Wilcoxon test}
+pairwise.wilcox.test(df_treated$Length_z_scores, df_treated$Sex, p.adjust.method = 'BH', paired = F)
+```
+
+There are significant differences between all groups of comparisons.
+
+To view it, visualize data using boxplot.
+
+```{r}
+ggplot(df_treated, aes(Sex,Length_z_scores, fill = Sex)) + geom_boxplot() + 
+  ggtitle("Length (z-scored) across different Sex")
+```
+
+We can clearly see that juvenile clams have smaller Length.
+
+### 9.2: Whole_weight--any difference between between male/female/juvenile?
+
+As shown before, distributions of variables are far from normal.
+To compare three independent groups which have non-parametric distributions 
+I used Kruskal-Wallis test with subsequent pairwise comparisons 
+with Benjamini-Hochberg correction.
+
+```{r kruskal-wallis test}
+kruskal.test(Whole_weight ~ Sex, data = df_treated)
+```
+
+```{r pairwise Wilcoxon rank sum test}
+pairwise.wilcox.test(df_treated$Whole_weight, df_treated$Sex, p.adjust.method = 'BH', paired = F)
+```
+
+There are significant differences between all groups of comparisons. 
+
+Visualizing groups:
+
+```{r kruskal plot}
+ggplot(df_treated, aes(Sex,Length_z_scores, fill = Sex)) + geom_boxplot() + 
+  ggtitle("Whole weight of different sexes of clams")
+```
+
+Thank you for your attention!
+
+## 10. More ideas to try later:
+1. PCA to check differences in our observations results between different sexes...
+
