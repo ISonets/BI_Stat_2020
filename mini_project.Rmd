@@ -1,0 +1,251 @@
+---
+title: "Survivability analysis"
+author: "Ignat Sonets"
+date: "3/5/2021"
+output: html_document
+---
+
+Hello! Today we perform survival analysis.
+
+# Tasks
+1. Do EDA
+2. Plot Kaplan-Meier curve plots
+3. Find groups which are different
+4. Find factors that have impact on survival
+
+# 0. Install & load packages 
+```{r install & load packages, echo=FALSE, message=FALSE}
+pckgs <- c('tidyverse', 'ggplot2', 'survival', 'survminer', 'ranger', 'dplyr','ggfortify','coin','Hmisc','funModeling')
+for(i in pckgs){
+  if(!require(i, character.only = T)){
+    install.packages(i, dependencies = T)
+    library(i)
+  }
+}
+```
+
+# 1. EDA
+
+Loading data:
+
+```{r load data & mutate}
+surv_data <- ovarian
+```
+
+Short description of variables:
+
+*futime*:	survival or censoring time
+
+*fustat*:	censoring status
+
+*age*:	in years
+
+*resid.ds*:	residual disease present (1=no,2=yes)
+
+*rx*:	treatment group
+
+*ecog.ps*:	ECOG performance status (1 is better, see reference http://www.npcrc.org/files/news/ECOG_performance_status.pdf)
+
+Descriptive stats:
+
+```{r short summary}
+str(surv_data)
+describe(surv_data)
+summary(surv_data)
+```
+
+Checking for NAs:
+
+```{r NA check}
+complete.cases(surv_data)
+```
+
+No NAs found. Good.
+
+Histograms for numeric data:
+
+```{r time plots}
+hist(surv_data$futime)
+```
+
+```{r age plots}
+hist(surv_data$age)
+```
+
+Frequency stats for factor vairables:
+
+```{r frequencies}
+freq(surv_data$fustat)
+freq(surv_data$resid.ds)
+freq(surv_data$rx)
+freq(surv_data$ecog.ps)
+```
+
+# 2. Survival anaysis
+
+# 2.1. Linear models & Kaplan-Meier curves
+
+Building initial linear model:
+
+```{r time~status analysis}
+km1 <- with(surv_data, Surv(futime,fustat))
+km1_fit <- survfit(Surv(futime, fustat) ~ 1, data=surv_data)
+summary(km1_fit, times = c(1,30,60,90*(1:10)))
+autoplot(km1_fit)
+```
+
+How treatment type can impact on survival?
+
+```{r treatment impact}
+km1_trt_fit <- survfit(Surv(futime, fustat) ~ rx, data=surv_data)
+autoplot(km1_trt_fit, main = 'Kaplan-Meier curve (treatment type)')
+```
+
+Let's transform our data to find any difference in survival between different groups. According to modern data, risks are significantly higher after age of 60 (63 to be exact). We transform *age* to factor with 2 grades: less than 60 years / over 60 years, as also changing some variables for more convenience:
+
+```{r more mutations}
+surv_data_mod <- mutate(surv_data, age_f = ifelse((age < 60), "LT60", "OV60"),
+              age_f = factor(age_f),
+              rx = factor(rx,labels=c("standard","test")),
+              resid.ds = factor(resid.ds,labels=c("No","Yes")),
+              ecog.ps = factor(ecog.ps,labels=c('Grade 1','Grade 2')))
+
+```
+
+First, let's evaluate impact of age:
+
+```{r age_factor}
+km1_age_fit <- survfit(Surv(futime, fustat) ~ age_f, data=surv_data_mod)
+autoplot(km1_age_fit, main = 'Kaplan-Meier curve (age less than 60 / over 60 ys)')
+```
+
+If patient over 60 ys old has ovarian cancer....well, you screwed.
+Now, residual diseases:
+
+```{r residual diseases}
+km1_resid_fit <- survfit(Surv(futime, fustat) ~ resid.ds, data=surv_data_mod)
+autoplot(km1_resid_fit, main = 'Kaplan-Meier curve (residual diseases presence)')
+```
+
+The more diseases you have, the less chances you have. Sad but true.
+
+ECOG performance also has an impact on survival, drastically change life quality of the patient and also affecring survival.
+
+```{r egos performance}
+km1_ecog_fit <- survfit(Surv(futime, fustat) ~ ecog.ps, data=surv_data_mod)
+autoplot(km1_ecog_fit, main = 'Kaplan-Meier curve (ECOG grade)')
+```
+
+Can we estimate 2 factors at once? Yes, we can.
+
+```{r 2 factors at once}
+surv_data_mod$hyb_age_rx <- paste(surv_data_mod$age_f, surv_data_mod$rx)
+km1_trt_age_fit <- survfit(Surv(futime, fustat) ~ hyb_age_rx, data=surv_data_mod)
+autoplot(km1_trt_age_fit, main='Combining 2 factors at once: treatment & age')
+```
+
+# 2.2. Log-rank test
+
+Another method to estimate difference between groups is log-rank test.
+
+```{r survival difference test}
+survdiff(Surv(futime, fustat) ~ rx, data = surv_data_mod)
+survdiff(Surv(futime, fustat) ~ age, data = surv_data_mod)
+survdiff(Surv(futime, fustat) ~ resid.ds, data = surv_data_mod)
+survdiff(Surv(futime, fustat) ~ ecog.ps, data = surv_data_mod)
+```
+
+
+```{r}
+logrank_test(Surv(futime, fustat) ~ rx,data=surv_data_mod)
+logrank_test(Surv(futime, fustat) ~ age_f,data=surv_data_mod)
+logrank_test(Surv(futime, fustat) ~ resid.ds,data=surv_data_mod)
+logrank_test(Surv(futime, fustat) ~ ecog.ps,data=surv_data_mod)
+```
+
+To put in simple, the older patient is, the chances are significantly lower.
+
+# 2.3. Cox model to analyse risk-impact factors
+
+```{r cox test init}
+cox <- coxph(Surv(futime, fustat) ~ rx + age + resid.ds + ecog.ps, data = surv_data)
+summary(cox)
+```
+
+```{r cox fit}
+cox_fit <- survfit(cox)
+autoplot(cox_fit, main = 'Cox model for risks evaluation of different factors')
+```
+
+Covariates test:
+
+```{r AIC test and finals,warning=FALSE}
+aa_fit <- aareg(Surv(futime, fustat) ~ rx + age + resid.ds + ecog.ps, data = surv_data)
+autoplot(aa_fit)
+```
+
+Hazard ratio analysis:
+
+```{r}
+fit.coxph <- coxph(Surv(futime, fustat) ~ rx + age + resid.ds + ecog.ps, data = surv_data)
+ggforest(fit.coxph, data = surv_data)
+```
+
+*resid.ds* have HR more than 2, so it means that *resid.ds*==2, you have 70% chance that you will die earlier. Sad. Treatment type have small (smaller than I expected) impact on outcome (chance are only ~ 28%). *ecog.ps* has 58% of chance that if patient have ECOG status == 2, she RIP earlier. Same for *age*: 52% of chance ,so if patient older than 60 years, patient will pass away earlier.
+
+# 2.4 Random forest model
+
+This type of survival analysis allow to tack each patients' fate.
+
+```{r random forest}
+r_fit <- ranger(Surv(futime, fustat) ~ rx + age + resid.ds + ecog.ps, data = surv_data,
+                mtry = 4,
+                importance = "permutation",
+                splitrule = "extratrees",
+                verbose = TRUE)
+```
+
+```{r average for each model}
+death_times <- r_fit$unique.death.times 
+surv_prob <- data.frame(r_fit$survival)
+avg_prob <- sapply(surv_prob,mean)
+```
+
+```{r curves for each patient}
+plot(r_fit$unique.death.times,r_fit$survival[1,], 
+     type = "l", 
+     ylim = c(0,1),
+     col = "red",
+     xlab = "Days",
+     ylab = "survival",
+     main = "Patient Survival Curves")
+cols <- colors()
+for (n in sample(c(2:dim(surv_data)[1]), 20)){
+  lines(r_fit$unique.death.times, r_fit$survival[n,], type = "l", col = cols[n])
+}
+lines(death_times, avg_prob, lwd = 2)
+legend(500, 0.7, legend = c('Average = black'))
+```
+
+# 2.5. All 3 models alltogether
+
+```{r 3 models alltogether}
+kmi <- rep("KM",length(km1_fit$time))
+km_df <- data.frame(km1_fit$time,km1_fit$surv,kmi)
+names(km_df) <- c("Time","Surv","Model")
+
+coxi <- rep("Cox",length(cox_fit$time))
+cox_df <- data.frame(cox_fit$time,cox_fit$surv,coxi)
+names(cox_df) <- c("Time","Surv","Model")
+
+rfi <- rep("RF",length(r_fit$unique.death.times))
+rf_df <- data.frame(r_fit$unique.death.times,avg_prob,rfi)
+names(rf_df) <- c("Time","Surv","Model")
+
+plot_df <- rbind(km_df,cox_df,rf_df)
+
+p <- ggplot(plot_df, aes(x = Time, y = Surv, color = Model))
+p + geom_line()
+```
+
+Thank you for your attention!
