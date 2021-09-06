@@ -1,0 +1,422 @@
+---
+title: "Project_3: Mice"
+author: "Ignat Sonets"
+date: "2/24/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Greetings! Today we analyse dataset: Expression levels of 77 proteins measured in the cerebral cortex of 8 classes of control and Down syndrome mice exposed to context fear conditioning, a task used to assess associative learning. You can downlodad ata here: https://archive.ics.uci.edu/ml/datasets/Mice+Protein+Expression
+
+# **Tasks**
+
+Tasks are:
+1. Give a dataset description:
+
+  -how many mice?
+  
+  -how many groups?
+  
+  -are these groups balanced?
+  
+  -check for NA
+  
+2. Perform ANOVA for BDNF_N~class
+
+3. Make a linear model for ERBB4_N prediction on the basis of other proteins data:
+
+  -conduct diagnostics of the model;
+  
+  -is it good solution?
+  
+4. Perform PCA:
+
+  -make an ordination;
+  
+  -plot scores;
+  
+  -find '% explained' for each PC;
+  
+  -plot 3D plot for first 3 PCs.
+  
+# 0. Loading libraries
+
+```{r required packages installation, message=FALSE, results='hide'}
+pckgs <- c('tidyverse', 'ggplot2', 'FactoMineR', 'multcompView', 'vegan', 'plotly','psych','car','gridExtra','ggpubr','rstatix','RColorBrewer')
+for(i in pckgs){
+  if(!require(i, character.only = T)){
+    install.packages(i, dependencies = T)
+    library(i)
+  }
+}
+```
+
+# 1.Data manipulating
+
+```{r uploading data}
+data_mice <- readxl::read_xls('Data_Cortex_Nuclear.xls')
+```
+
+According to the dataset description, there are 72 mice with 15 experiments each. Working with such a complex ID(e.g. 309_1) is not so convinient,so I decided to split **Mouse_ID** column into 2 columns: **Mouse_ID** and **Experiment**
+
+```{r}
+data_mice <- separate(data_mice,col = 1,into=c('Mouse_ID','Experiment'),sep = '_',remove=T)
+```
+
+We also need to change type of some variables:
+
+```{r factors}
+data_mice$Mouse_ID <- as.factor(data_mice$Mouse_ID)
+data_mice$Experiment <- as.factor(data_mice$Experiment)
+data_mice$class <- as.factor(data_mice$class)
+data_mice$Genotype <- as.factor(data_mice$Genotype)
+data_mice$Treatment <- as.factor(data_mice$Treatment)
+data_mice$Behavior <- as.factor(data_mice$Behavior)
+```
+
+P.S. I found this elegant solution to get rid fo manual changing data type here: https://gist.github.com/ramhiser/93fe37be439c480dc26c4bed8aab03dd
+
+```{r dplyr magic}
+data_mice <- data_mice %>% mutate_if(is.character,as.factor)
+```
+
+### 1.1 How many mice?
+
+Let's verify mice count (we could also take a look at the structure):
+
+```{r mice_count}
+mouse_count <- length(unique(data_mice$Mouse_ID))
+str(data_mice)
+```
+
+Yep, 72 mice.
+
+### 1.2/ 1.3 How many groups contains our dataset?/ Are they balanced?
+
+There are 8 classes (last column in dataset):
+
+c-CS-s: control mice, stimulated to learn, injected with saline (9 mice)
+
+c-CS-m: control mice, stimulated to learn, injected with memantine (10 mice)
+
+c-SC-s: control mice, not stimulated to learn, injected with saline (9 mice)
+
+c-SC-m: control mice, not stimulated to learn, injected with memantine (10 mice)
+
+t-CS-s: trisomy mice, stimulated to learn, injected with saline (7 mice)
+
+t-CS-m: trisomy mice, stimulated to learn, injected with memantine (9 mice)
+
+t-SC-s: trisomy mice, not stimulated to learn, injected with saline (9 mice)
+
+t-SC-m: trisomy mice, not stimulated to learn, injected with memantine (9 mice)
+
+Our groups are *almost* the same size, I think it wouldn't be a problem in future anlysis. 
+
+How to verify it (if you wish)? Using this code you can easily confirm dataset description:
+
+```{r how namy mice in each class?}
+data_mice %>% 
+  group_by(class) %>% summarise(number = n() / 15)
+```
+
+### 1.4 Missing values?
+
+How many NA's we have? There are 2 ways of checking:
+
+```{r NA check}
+table(is.na(data_mice))
+summary(data_mice)
+```
+
+There are 1396 NAs. i don't want to lose any data for any protein. It should be noted that some proteins measurements data contains extreme amount of NAs. We could simply remove them entirely, but for some proteins the amount of data will shrink drastically.We would do some other stuff: we will replace NAs with means according to class (not the whole column!This type of change (using the whole column) would be a disaster in biological sense). Replacing with 0's will significantly change other stats.
+
+```{r NA remove, warning = FALSE,message=FALSE}
+data_mice[,c(3:79,83)] <- data_mice[,c(3:79,83)] %>% group_by(class) %>% 
+  mutate_all(funs(ifelse(is.na(.), mean(., na.rm = TRUE),.)))
+```
+
+Let's check if we successfully replaced NAs:
+
+```{r NA check again}
+table(is.na(data_mice))
+```
+
+No NAs found. Now we're talking.
+
+# 2. Difference in BDNF_N level by class
+
+### 2.0. Check for distribution
+
+Let's have a look at BDNF_N level of each class:
+
+```{r BDNF level}
+ggplot(data_mice, aes(class, BDNF_N)) + geom_boxplot(aes(fill = class)) + theme_bw() + scale_fill_brewer(palette="Accent") + ggtitle('BDNF_N level plot')
+```
+
+First of all, we should check if BDNF_N data is normally distributed:
+
+```{r shapiro-wilk test}
+shapiro.test(data_mice$BDNF_N)
+```
+
+Far from normal distribution. But let's try to use one-way ANOVA despite of this fact,and after then let's have a look at QQplot of standardized resilduals. If QQplot would be good, so our ANOVA analysis could be applied.
+It should be noted that we **must** use pairwise comparison tests after ANOVA. I chose to conduct Tukey post-hoc test.
+
+### 2.1. ANOVA & Tukey test
+
+```{r ANOVA}
+anova1 <- aov(BDNF_N~class,data_mice)
+```
+
+```{r posthoc test}
+posthoc1 <- TukeyHSD(x=anova1)
+posthoc1
+plot(posthoc1,las=1,cex.axis=0.5,col="brown")
+```
+
+Difference between classes in BDNF_N level are significant.
+
+How to interpret this plot (in naive but right way)? If bar is not in contact with '0.0' line, it means that difference is big enough to be significant.
+
+Let's check if our results are satisfied to the conditions of applicability of ANOVA.
+
+There are 4 conditions:
+
+-normal distribution of residuals;
+
+-homogenity of residuals variance;
+
+-lack of the collinearity;
+
+-independent measurements in each group/class.
+
+```{r residuals plot}
+anova_diag <- fortify(anova1)
+gg_resid1 <- ggplot(data = anova_diag, aes(x = .fitted, y = .stdresid)) + 
+  geom_point() + 
+  geom_smooth(method = 'lm') +
+  geom_hline(yintercept = 0)+
+  geom_hline(yintercept = 2, color = "red") +
+  geom_hline(yintercept = -2, color = "red")+
+  xlab('Predicted') + ylab ('Standardized residual') + theme_bw() + ggtitle('Standardized residuals distribution plot')
+gg_resid1
+```
+
+We found no pattern of distribution of residuals.
+
+More fancy plot to display residuals distribution:
+
+```{r fancy resids}
+ggplot(anova_diag, aes(class, .stdresid, fill = class)) + geom_boxplot() +
+         xlab('Class') + ylab ('Standardized residuals') + ggtitle ('Standardized residuals distribution plot') + 
+         theme_bw() + scale_fill_brewer(palette="Dark2")
+```
+
+
+```{r QQ plot}
+qqPlot(anova_diag$.stdresid)
+```
+
+The distribution is almost normal (except of the upper part of the curve). I think ANOVA can handle this, our results can be trusted.
+
+### 2.2. BONUS: Kraskal-Wallis test & Dunn test
+
+For all fastidious statisticians striving for perfection, I also made a Kruskal-Wallis test with Dunn test for pairwise comparisons.
+
+```{r kruskal test}
+kruskal_anova <-data_mice %>% kruskal_test(BDNF_N~class)
+
+pwc_nonpar <-data_mice %>% dunn_test(BDNF_N~class, p.adjust.method = "hochberg")
+pwc_nonpar
+```
+
+```{r PWC plot}
+pwc_nonpar <- pwc_nonpar %>% add_xy_position(x = "class")
+ggboxplot(data_mice, x = "class", y = "BDNF_N") +
+  stat_pvalue_manual(pwc_nonpar, hide.ns = TRUE) +
+  labs(
+    subtitle = get_test_label(kruskal_anova, detailed = TRUE),
+    caption = get_pwc_label(pwc_nonpar)
+  )
+```
+
+Results are the same.
+  
+# 3. Linear model for ERBB4_N
+
+### 3.1. Full model and initial corrections
+
+The first step would be a building of full model which contains all of the predictors:
+
+```{r full model}
+fit1 <- lm(ERBB4_N~.-Mouse_ID-Experiment-Genotype-Treatment-class-Behavior,data=data_mice)
+summary(fit1)
+```
+
+Hm, 1 NA suddenly found. It's a pS6_N, and NA means that this variable is linearly related to the other variables, thus causing **perfect collinearity**. This fact can also be found when making VIF estimation:
+
+```{r pS6N remove,error = TRUE}
+vif(fit1)
+```
+
+```{r check for perfect multicoll}
+perf_coll_vars <- attributes(alias(fit1)$Complete)$dimnames[[1]]
+```
+
+We have to remove pS6_N from our model.
+
+```{r update}
+fit2 <- update(fit1, .~. - pS6_N)
+```
+
+Time to diagnostics!
+
+### 3.2 Diagnostics of the full model
+
+It;s time to do everyday's job.
+
+```{r diag}
+fit2_diag <- fortify(fit2)
+head(fit2_diag)
+```
+
+```{r Cooks distance}
+ggplot(fit2_diag, aes(x = 1:nrow(fit2_diag), y = .cooksd)) + 
+  geom_bar(stat = "identity") + 
+  geom_hline(yintercept = 2, color = "red") + theme_bw() + ggtitle('Cooks distance plot')
+```
+
+No one is ever close to Cooks distance borderline == 2. It means we don't have any influential observation.
+
+```{r distribution pattern}
+gg_resid2 <-ggplot(data = fit2_diag, aes(x = .fitted, y = .stdresid)) + 
+  geom_point() + 
+  geom_smooth(method = 'lm') +
+  geom_hline(yintercept = 0)+
+  geom_hline(yintercept = 2, color = "red") +
+  geom_hline(yintercept = -2, color = "red")+
+  xlab('Predicted') + ylab ('Standardized residual') + theme_bw() + ggtitle('Standardized residuals distribution plot')
+gg_resid2 
+```
+
+No patterns found (but we have some outliers).
+ 
+```{r autocorr}
+ggplot(data_mice, aes(x = ERBB4_N, y = 1:nrow(data_mice))) + 
+  geom_point() + theme_bw() +
+  labs(y = 'Observation number', x = 'Predicted variable values') + ggtitle('Autocorrelations plot')
+```
+
+There are autocorrelations in our data since there were multiple measurements for each mouse.
+
+Normality check:
+
+```{r normality check fit2}
+ggplot(data = fit2_diag, aes(x = 1:nrow(fit2_diag), y = .stdresid)) +
+  geom_point() + theme_bw() +
+  labs(y = 'Standardized Residual', x = 'Observation number') + ggtitle('Normality check plot')
+```
+
+And QQ plots:
+
+```{r qq plot1}
+qqPlot(fit2_diag$.stdresid)
+```
+
+
+```{r qqplot2}
+qqPlot(fit2_diag$.fitted)
+```
+
+Finally,multicollinearity checking:
+
+```{r multicoll checking}
+vif(fit2)
+```
+
+### 3.3 Conclusion
+
+Unfortunately, some of conditions of LM usage have not met. Our model suffers from autocorrelation, abnormal distribution, dependecy of observations and ton of multicollinearity. One might say 'ok boomer our model explains ~80% of variance best model af', but using this model would be a suicide for any serious researcher.
+
+# 4. PCA
+
+Let's do this.
+
+```{r PCA start}
+pca_res <- rda(data_mice[,3:79],scale = T)
+```
+
+Screeplot:
+
+```{r BS screeplot}
+screeplot(pca_res, type = "lines", bstick = TRUE, main = 'Screeplot with Broken Stick model')
+```
+
+Biplot with symmetrical scaling:
+
+```{r biplot1}
+biplot(pca_res)
+```
+
+Biplot of ordinations:
+
+```{r PCA ord plot}
+biplot(pca_res,scaling = "sites", display = "sites", main = 'Ordinations biplot')
+```
+
+Biplot of correlations:
+
+```{r PCA corr plot}
+biplot(pca_res,scaling = "species", display = "species", main = 'Correlations biplot')
+```
+
+It's barely readable because of its clustering. We aren't able to say where are observations of different clusters.
+
+Let's try to colour ordinations using data from original dataset. We need to add first 3 PCs to origianl data and using *class* data to colour ordination plot. Let's build 2D plot first.
+
+```{r unite datasets}
+data_with_PCs <- data.frame(data_mice,
+                        scores(pca_res, display = "sites", choices = c(1, 2, 3), scaling = "sites"))
+```
+
+
+```{r 2D plot}
+ggplot(data_with_PCs, aes(x = PC1, y = PC2)) + 
+  geom_point(aes(color = class), alpha = 0.5) +
+  ggtitle(label = 'Ordinations biplot (coloured)') + theme_bw() + scale_fill_brewer(palette="Spectral")
+```
+
+And 3D plot using **plotly**:
+
+```{r 3D plot}
+fig_3D_3D <- plot_ly(data_with_PCs, x = ~PC1, y = ~PC2, z = ~PC3, marker = list(size = 2), color = ~class, colors = 'BrBG')
+fig_3D <- fig_3D_3D %>% add_markers()
+fig_3D <- fig_3D %>% layout(scene = list(xaxis = list(title = 'PC1'),
+                                   yaxis = list(title = 'PC2'),
+                                   zaxis = list(title = 'PC3')))
+fig_3D
+```
+
+Plotly is a wondeful library that allows to plot interactive plots.
+Okay, plots are made, and we can clearly see overlapping of classes. But how much variance can be explained by each PC? Especially with first 3 PCs we used to plot. We already plotted screeplot, but knowing the cumulative proportion would be handy.
+
+```{r variance}
+pca_res_PC_only <- as.data.frame(summary(pca_res)$cont)
+pca_res_PC_only[3, 3]
+```
+
+So,first 3 PCs explain ~53% of variance. Let's build more sophisticated plot dispalying impact of each PC.
+
+```{r final}
+pca_summary <- summary(pca_res)
+pca_result <- as.data.frame(pca_summary$cont)
+plot_data <- as.data.frame(t(pca_result[c("Proportion Explained"),]))
+plot_data$component <- seq(1:nrow(plot_data))
+ggplot(plot_data, aes( component, `Proportion Explained`)) + geom_bar(stat = "identity") + theme_bw() + xlab('PC') + ggtitle('Screeplot without Broken Stick')
+```
+
+And that's all! Thank you for your attention!
